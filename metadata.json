@@ -1,0 +1,6 @@
+{
+  "name": "Edulink - Interactive Learning Platform",
+  "description": "An interactive, fully-featured science education platform designed under the supervision of Dr. Ghada Abdelaal for Integrated Science, Physics, Chemistry, and Biology. Features auto-grading, dynamic blueprints, question banks, analytics dashboards, and printable reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

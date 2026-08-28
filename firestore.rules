@@ -1,0 +1,387 @@
+rules_version = '2';
+
+// =============================================================================
+// Science Garden — Firestore security rules
+//
+// Verified by an automated suite against the Firestore emulator:
+//   npm run test:rules
+// Every rule below has a corresponding test. If you change a rule, run the suite.
+//
+// ---------------------------------------------------------------------------
+// BEFORE DEPLOYING — one manual step:
+//
+//  Confirm no attempt is mid-flight. Attempts created before these rules use a
+//  random document id (sa_<quizId>_<rand>_<ts>) and cannot satisfy the create rule below,
+//  so any in-progress legacy attempt is orphaned and the student restarts.
+//
+// ---------------------------------------------------------------------------
+// WHAT IS AND IS NOT PROTECTED
+//
+// Enforced here:
+//   - Only the teacher's uid can read student PII, author content, or grant a retake.
+//   - One document per ATTEMPT, at a DERIVED and checked id
+//     (assessmentId + '__c_' + studentCode, plus '__a<n>' for n > 1), so uniqueness is a
+//     property of the key rather than of client behaviour. A student cannot sit an assessment
+//     twice by their own choice, and cannot file a retake over an earlier attempt.
+//   - Attempt n+1 exists only if the teacher stamped a grant on attempt n. Students cannot
+//     write that grant.
+//   - A completed attempt is immutable to the student, forever. Granting a retake leaves it
+//     untouched and creates a new document, so no attempt is ever overwritten or reset.
+//   - A student may only write an attempt against a code they currently hold the claim on.
+//   - A submission must be owned by the caller, addressed by a derived id, and reference an
+//     attempt the caller owns. One submission per attempt, write-once.
+//
+// NOT enforced, and not fixable without a server:
+//   - Grading happens in the browser. Correct answers ship inside the question payload and the
+//     submitted score is asserted by the client. The score is range-checked here
+//     (0 <= score <= totalQuestions) and nothing more. A student who opens devtools can read the
+//     answers and can submit a legitimate-looking perfect score. Closing this needs server-side
+//     grading (Cloud Functions / Blaze).
+//   - A question is readable by document id to any signed-in session, because the quiz player
+//     fetches its own paper that way and grading is client-side. What is closed is DISCOVERY:
+//     questions cannot be listed, and neither assessments nor assessmentCodes can be listed, so
+//     there is no path from "signed in" to "here is every question id". An attacker is limited to
+//     the ids inside an assessment whose join code they were actually given.
+//   - studentCodes documents are addressed by the code itself, so a script can enumerate a
+//     4-character code space (about 1.05M) and learn a student's name and grade. Parent phone
+//     numbers are deliberately NOT stored there — they live in `students`, which is teacher-only.
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    // The single teacher account. Pinning the uid is what makes the teacher boundary
+    // unforgeable: the previous check was "not anonymous", which anyone could satisfy by
+    // registering an email/password account against the public API key.
+    function teacherUid() {
+      return 'yG2GrK8XNsNdbREzlzrfbHfEjd93';
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isTeacher() {
+      return isSignedIn() && request.auth.uid == teacherUid();
+    }
+
+    // Does the caller currently hold the claim on this access code?
+    // Uses .get(key, default) so a mirror document written before claimedByUid existed
+    // evaluates to '' instead of raising — a raising rule denies, which silently broke claiming.
+    function codeClaimedByCaller(code) {
+      return code is string
+        && code != ''
+        && exists(/databases/$(database)/documents/studentCodes/$(code))
+        && get(/databases/$(database)/documents/studentCodes/$(code))
+             .data.get('claimedByUid', '') == request.auth.uid;
+    }
+
+    // Ownership of an attempt. There is deliberately NO "empty studentUid means anyone" branch:
+    // that made every attempt written without a uid world-owned.
+    function ownsAttempt(data) {
+      return isSignedIn()
+        && (
+          (data.get('studentUid', '') != '' && data.get('studentUid', '') == request.auth.uid)
+          || codeClaimedByCaller(data.get('studentCode', ''))
+        );
+    }
+
+    function attemptOwnedByCaller(attemptId) {
+      return attemptId is string
+        && attemptId != ''
+        && exists(/databases/$(database)/documents/studentAssignments/$(attemptId))
+        && ownsAttempt(get(/databases/$(database)/documents/studentAssignments/$(attemptId)).data);
+    }
+
+    // The id an attempt MUST be filed under. Attempt 1 keeps the historical suffix-free form so
+    // every attempt and submission written before retakes existed stays valid; later attempts
+    // carry the number, which is what stops a retake landing on an earlier attempt's document.
+    function derivedAttemptId(assessmentId, studentCode, attemptNumber) {
+      return attemptNumber == 1
+        ? assessmentId + '__c_' + studentCode
+        : assessmentId + '__c_' + studentCode + '__a' + string(attemptNumber);
+    }
+
+    // Has the teacher granted a further sitting after attempt `n`?
+    //
+    // The grant lives on the PREVIOUS attempt and only the teacher can write it (a completed
+    // attempt is frozen to students, and 'retakeApproved' is absent from the student's allowed
+    // update keys below). So one Unlock click authorizes exactly one more attempt: to reach
+    // attempt n+2 the teacher must grant again on attempt n+1. This is what replaces the old
+    // blanket `attemptNumber == 1`, which made retakes impossible rather than merely controlled.
+    //
+    // .get(k, default) throughout: an attempt written before this field existed must evaluate to
+    // false, not raise — a raising rule denies, which would lock every legacy student out.
+    function retakeGrantedAfter(assessmentId, studentCode, n) {
+      return exists(/databases/$(database)/documents/studentAssignments/$(derivedAttemptId(assessmentId, studentCode, n)))
+        && get(/databases/$(database)/documents/studentAssignments/$(derivedAttemptId(assessmentId, studentCode, n)))
+             .data.get('status', '') == 'completed'
+        && get(/databases/$(database)/documents/studentAssignments/$(derivedAttemptId(assessmentId, studentCode, n)))
+             .data.get('retakeApproved', false) == true;
+    }
+
+    // -------------------------------------------------------------------------
+    // 1. users — teacher records. Historically stored plaintext passwords.
+    // -------------------------------------------------------------------------
+    match /users/{userId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. questions — the question bank, including correctAnswerIndex.
+    //
+    // get is allowed to any signed-in session but list is NOT. A student sitting a quiz fetches
+    // each question by document id (fetchQuestionsByIdsFromFirestore uses getDoc per id, never a
+    // query), so single-document reads are all the app needs on the student side. Denying list
+    // means the bank cannot be enumerated or dumped: an attacker can only retrieve questions
+    // whose ids they already know, which in practice means the ones in their own assessment.
+    //
+    // Honest limit: a student's own quiz still arrives with correctAnswerIndex in it, because
+    // grading happens in the browser. Ids of OTHER assessments' questions are not discoverable
+    // through this collection, but they are readable if guessed or observed elsewhere.
+    // -------------------------------------------------------------------------
+    match /questions/{questionId} {
+      allow get: if isSignedIn();
+      allow list: if isTeacher();
+      allow write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. blueprints — teacher authoring artefacts. Verified that no student-side code path reads
+    // this collection (the student flow only ever carries a blueprintId string), so it is closed
+    // to students entirely.
+    // -------------------------------------------------------------------------
+    match /blueprints/{blueprintId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 4. assessments — teacher-only. Students join through assessmentCodes (4b).
+    //
+    // This collection used to be readable by any signed-in session, because
+    // getAssessmentByCodeFromFirestore resolved a join code by querying it and, failing that,
+    // scanning it. That combination was the enumeration hole (F1): an assessment document carries
+    // questionIds, and questions/{id} is readable by any signed-in session because that is how the
+    // quiz player loads its own paper. So: list assessments -> harvest every questionId -> get each
+    // question -> the entire bank, correctAnswerIndex included, from a browser console. Denying
+    // `list` alone would not have closed it — assessment ids are derived from titles/timestamps and
+    // are visible in share links, so `get` was enough to walk them.
+    //
+    // Closing this collection is only possible because the student-facing subset now lives in
+    // assessmentCodes/{CODE}, addressed BY the code, so joining needs no query here at all.
+    // It also removes teacherWhatsApp, teacherId and internal notes from every student's reach (F3).
+    // -------------------------------------------------------------------------
+    match /assessments/{assessmentId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 4b. assessmentCodes — the join mirror, addressed BY the join code.
+    //
+    // Same shape as studentCodes (7b): the document id IS the secret, so `get` is open to any
+    // signed-in session while `list` is not. Possession of one join code therefore resolves exactly
+    // one assessment — there is no query that walks from one assessment to another, and no way to
+    // reach an assessment whose code you were not given.
+    //
+    // Join codes are 6-8 uppercase alphanumerics (36^6 = 2.2 billion at the shortest), which is a
+    // materially different proposition from the 4-character student codes noted above.
+    //
+    // The mirror carries only what the quiz player consumes: title, subject, grade, dates,
+    // settings, timing and questionIds. It must never carry teacherWhatsApp, teacherId or notes —
+    // this is the one assessment surface a student can read, so anything added here is published
+    // to every holder of a code. Written by the teacher only.
+    // -------------------------------------------------------------------------
+    match /assessmentCodes/{code} {
+      allow get: if isSignedIn();
+      allow list: if isTeacher();
+      allow write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 5. studentAssignments — one attempt per student per assessment.
+    // -------------------------------------------------------------------------
+    match /studentAssignments/{assignmentId} {
+      /**
+       * The `resource == null` branch is not a loosening — without it a student cannot start an
+       * assessment at all.
+       *
+       * startOrResumeAttempt runs runTransaction(tx.get -> tx.set): the guard against two tabs
+       * both creating an attempt requires READING the document first, and on a first join that
+       * document does not exist. For an absent document `resource` is null, so `resource.data`
+       * inside ownsAttempt() cannot be evaluated and the whole rule errors, which Firestore
+       * treats as a deny. The student's very first read was therefore always refused and
+       * "Start Assessment" did nothing.
+       *
+       * What this permits is a bare existence check on an id the caller must already be able to
+       * construct (assessmentId + '__c_' + studentCode). It grants no data: the document is
+       * absent by definition, and the moment one exists, ownsAttempt() is the only way in.
+       * Creating it still requires passing every condition on `create` below.
+       *
+       * Scoped to `resource == null` and nothing else — an existing attempt belonging to someone
+       * else stays unreadable, and `list` is unaffected because a listed document always exists.
+       */
+      allow read: if isTeacher()
+        || (resource == null && isSignedIn())
+        || ownsAttempt(resource.data);
+
+      // Create is pinned on five axes. Each one closes a way the previous rule trusted a
+      // client-supplied field:
+      //   studentUid   — you may only create your own attempt
+      //   studentCode  — only for a code you currently hold, so you cannot squat someone else's
+      //   assignmentId — must equal the derived id FOR THE CLAIMED ATTEMPT NUMBER, so you can
+      //                  neither occupy an arbitrary slot nor file attempt 2 over attempt 1
+      //   status       — always starts in progress
+      //   attemptNumber— 1, or n+1 with a teacher grant on attempt n
+      //
+      // This last axis is the only thing that changed when retakes were fixed. It used to be a
+      // flat `attemptNumber == 1`, which closed the negative-seed escalation by making a second
+      // attempt impossible for anyone — including a student the teacher had explicitly unlocked.
+      // The escalation stays closed: attemptNumber must be a positive integer, and every value
+      // above 1 requires a grant the student cannot write. What is now possible is exactly what
+      // the teacher authorized, one sitting at a time.
+      allow create: if isTeacher()
+        || (
+          isSignedIn()
+          && request.resource.data.studentUid == request.auth.uid
+          && request.resource.data.studentCode is string
+          && request.resource.data.studentCode != ''
+          && codeClaimedByCaller(request.resource.data.studentCode)
+          && request.resource.data.status == 'in_progress'
+          && request.resource.data.attemptNumber is int
+          && request.resource.data.attemptNumber >= 1
+          && assignmentId == derivedAttemptId(
+               request.resource.data.assessmentId,
+               request.resource.data.studentCode,
+               request.resource.data.attemptNumber)
+          && (
+            request.resource.data.attemptNumber == 1
+            || retakeGrantedAfter(
+                 request.resource.data.assessmentId,
+                 request.resource.data.studentCode,
+                 request.resource.data.attemptNumber - 1)
+          )
+        );
+
+      // A completed attempt is frozen to the student, permanently and with no exceptions — it is
+      // never reopened, not even by the teacher. The Unlock control (isTeacher() only) stamps
+      // 'retakeApproved' on it and releases the code claim; the student's next join then creates
+      // a NEW attempt document. That is what keeps every past attempt's answers, score and
+      // timings on the record.
+      //
+      // hasOnly() pins identity: assessmentId, studentUid, studentCode, attemptNumber, createdAt
+      // and serverStartedAt cannot be rewritten by a student mid-attempt. 'retakeApproved' is
+      // deliberately absent from that list — a student who could write it could mint themselves
+      // an unlimited supply of attempts.
+      allow update: if isTeacher()
+        || (
+          ownsAttempt(resource.data)
+          && resource.data.get('status', '') != 'completed'
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['status', 'currentProgress', 'submittedAt', 'focusLossCount'])
+        );
+
+      allow delete: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 6. submissions — names, scores, phone numbers.
+    //
+    // The derived document id is enforced HERE, not merely produced by the client, so a repeat
+    // submit collides with an existing document and a student cannot mint extra rows under
+    // invented ids.
+    //
+    // UNCHANGED by multi-attempt support, and deliberately so: 'sub_' + studentAssignmentId is
+    // already unique per attempt now that the attempt id carries the attempt number. Each attempt
+    // gets exactly one submission, still write-once, with no new id scheme and no relaxation
+    // here. The reason retakes used to vanish was upstream — every attempt shared one attempt id,
+    // so the retake's submission collided and this rule correctly refused it.
+    // -------------------------------------------------------------------------
+    match /submissions/{submissionId} {
+      allow read: if isTeacher();
+
+      allow create: if isTeacher()
+        || (
+          isSignedIn()
+          && request.resource.data.studentUid == request.auth.uid
+          && submissionId == 'sub_' + request.resource.data.studentAssignmentId
+          && attemptOwnedByCaller(request.resource.data.studentAssignmentId)
+          && request.resource.data.score is number
+          && request.resource.data.totalQuestions is number
+          && request.resource.data.score >= 0
+          && request.resource.data.score <= request.resource.data.totalQuestions
+        );
+
+      allow update, delete: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. students — names, grades, parent phone numbers, access codes. Teacher-only.
+    // -------------------------------------------------------------------------
+    match /students/{studentId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 7b. studentCodes — access-code claim records, addressed BY the code.
+    //
+    // Only the teacher CREATES these (the student manager mirrors each roster entry). A student
+    // may claim an unclaimed code and nothing else: if students could create these documents they
+    // could mint an identity for any code they invented.
+    // -------------------------------------------------------------------------
+    match /studentCodes/{code} {
+      allow get: if isSignedIn();
+      allow list: if isTeacher();
+      allow create: if isTeacher();
+
+      allow update: if isTeacher()
+        || (
+          isSignedIn()
+          && request.resource.data.claimedByUid == request.auth.uid
+          && (
+            resource.data.get('claimedByUid', '') == ''
+            || resource.data.get('claimedByUid', '') == request.auth.uid
+          )
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['claimedByUid', 'claimedAt'])
+        );
+
+      allow delete: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 8. reportDeliveryLogs — WhatsApp delivery journal, contains parent phones.
+    // -------------------------------------------------------------------------
+    match /reportDeliveryLogs/{logId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 9. orphanedImages — image bookkeeping. Every writer runs in the teacher's editor, so
+    // students have no reason to create these and cannot use them to burn the write quota.
+    // -------------------------------------------------------------------------
+    match /orphanedImages/{orphanId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // 10. groups — the teacher's class-group vocabulary ("Group A", "Saturday 5pm"). Authoring
+    // metadata with no student-side reader: a student's group is never mirrored into
+    // studentCodes (upsertStudentCodeMirror deliberately omits it) and never reaches an
+    // assessment, so like blueprints this is closed to students entirely.
+    // -------------------------------------------------------------------------
+    match /groups/{groupId} {
+      allow read, write: if isTeacher();
+    }
+
+    // -------------------------------------------------------------------------
+    // Default deny — including the `assignments` collection assignmentGenerator.ts writes to.
+    // -------------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

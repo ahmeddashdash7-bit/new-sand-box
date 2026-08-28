@@ -1,0 +1,72 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+body {
+  font-family: var(--font-sans);
+  direction: ltr;
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* Native Browser Print & A4 PDF Styles */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 6mm;
+  }
+
+  html, body {
+    width: 210mm !important;
+    height: 297mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    overflow: hidden !important;
+  }
+
+  /* Hide interface elements */
+  body * {
+    visibility: hidden !important;
+  }
+
+  /* Show print template only */
+  #pdf-report-template,
+  #pdf-report-template * {
+    visibility: visible !important;
+  }
+
+  #pdf-report-template {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 190mm !important;
+    max-width: 190mm !important;
+    max-height: 270mm !important;
+    margin: 0 auto !important;
+    padding: 6mm 8mm !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    box-sizing: border-box !important;
+    overflow: hidden !important;
+    box-shadow: none !important;
+    page-break-after: avoid !important;
+    page-break-inside: avoid !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .no-print,
+  button,
+  header,
+  footer,
+  nav {
+    display: none !important;
+  }
+}

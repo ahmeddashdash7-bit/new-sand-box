@@ -1,0 +1,209 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account information for students and teachers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "fullName": { "type": "string" },
+        "role": { "type": "string" },
+        "password": { "type": "string" },
+        "grade": { "type": "string" },
+        "centerGroup": { "type": "string" },
+        "specialization": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["username", "fullName", "role"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Reusable question bank item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "type": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correctAnswerIndex": { "type": "number" },
+        "explanation": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "imagePath": { "type": "string" },
+        "imageName": { "type": "string" },
+        "imageWidth": { "type": "number" },
+        "imageHeight": { "type": "number" },
+        "imageUploadedAt": { "type": "number" },
+        "subject": { "type": "string" },
+        "lesson": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["text", "type", "subject", "difficulty"]
+    },
+    "Blueprint": {
+      "title": "Blueprint",
+      "description": "Assessment template containing selection rules without copied questions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "lesson": { "type": "string" },
+        "totalQuestions": { "type": "number" },
+        "difficultyDistribution": {
+          "type": "object",
+          "properties": {
+            "easyCount": { "type": "number" },
+            "mediumCount": { "type": "number" },
+            "hardCount": { "type": "number" }
+          }
+        },
+        "allowedQuestionTypes": { "type": "array", "items": { "type": "string" } },
+        "timeLimitMinutes": { "type": "number" },
+        "randomizeQuestionOrder": { "type": "boolean" },
+        "randomizeAnswerChoices": { "type": "boolean" },
+        "teacherName": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["title", "subject", "totalQuestions", "difficultyDistribution", "allowedQuestionTypes"]
+    },
+    "Assessment": {
+      "title": "Assessment",
+      "description": "Published assessment instance referencing a Blueprint and Question IDs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subject": { "type": "string" },
+        "grade": { "type": "string" },
+        "blueprintId": { "type": "string" },
+        "questionIds": { "type": "array", "items": { "type": "string" } },
+        "joinCode": { "type": "string" },
+        "assessmentCode": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "visibility": { "type": "string" },
+        "status": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "shareSettings": { "type": "object" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "title", "subject", "blueprintId"]
+    },
+    "StudentAssignment": {
+      "title": "StudentAssignment",
+      "description": "Individual assignment assigned to a student referencing an Assessment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "assessmentId": { "type": "string" },
+        "blueprintId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "studentIdNumber": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "questionIds": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string" },
+        "timeLimitMinutes": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "assessmentId", "studentName", "questionIds"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "Completed student quiz submission referencing a StudentAssignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentAssignmentId": { "type": "string" },
+        "assessmentId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "seatNumber": { "type": "string" },
+        "quizId": { "type": "string" },
+        "quizTitle": { "type": "string" },
+        "score": { "type": "number" },
+        "totalQuestions": { "type": "number" },
+        "percentage": { "type": "number" },
+        "timeTakenSeconds": { "type": "number" },
+        "submittedAt": { "type": "number" }
+      },
+      "required": ["studentName", "quizTitle", "score", "studentAssignmentId"]
+    },
+    "StudentRecord": {
+      "title": "StudentRecord",
+      "description": "Student record storing student name, unique 3-char code, and parent phone number",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "parentPhone": { "type": "string" },
+        "grade": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["name", "code", "parentPhone"]
+    },
+    "ReportDeliveryLog": {
+      "title": "ReportDeliveryLog",
+      "description": "Log entry tracking teacher-initiated WhatsApp report delivery attempts per assessment and student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "submissionId": { "type": "string" },
+        "quizId": { "type": "string" },
+        "quizTitle": { "type": "string" },
+        "studentName": { "type": "string" },
+        "seatNumber": { "type": "string" },
+        "studentIdNumber": { "type": "string" },
+        "parentPhone": { "type": "string" },
+        "status": { "type": "string" },
+        "sendCount": { "type": "number" },
+        "lastSentAt": { "type": "number" },
+        "teacherNote": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["quizId", "studentName", "parentPhone", "status", "sendCount", "lastSentAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection storing user accounts"
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Collection storing reusable question bank questions"
+    },
+    "/blueprints/{blueprintId}": {
+      "schema": "Blueprint",
+      "description": "Collection storing assessment blueprints containing selection rules"
+    },
+    "/assessments/{assessmentId}": {
+      "schema": "Assessment",
+      "description": "Collection storing published assessment instances referencing blueprints"
+    },
+    "/studentAssignments/{assignmentId}": {
+      "schema": "StudentAssignment",
+      "description": "Collection storing generated student assignments referencing assessments"
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Collection storing student submissions referencing student assignments"
+    },
+    "/students/{studentId}": {
+      "schema": "StudentRecord",
+      "description": "Collection storing registered student profiles with codes and parent numbers"
+    },
+    "/reportDeliveryLogs/{logId}": {
+      "schema": "ReportDeliveryLog",
+      "description": "Collection storing report delivery history and status logs"
+    }
+  }
+}
