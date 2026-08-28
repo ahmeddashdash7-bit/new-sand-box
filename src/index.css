@@ -70,3 +70,30 @@ body {
     display: none !important;
   }
 }
+/* Force modal backdrop overlay to handle scrolling without freezing the main page */
+.fixed.inset-0 {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  overflow-y: auto !important;
+  overscroll-behavior: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+  padding: 2rem 1rem !important;
+  z-index: 9999 !important;
+}
+
+/* Ensure inner pop-up modal box fits nicely and handles content scrolling */
+.fixed.inset-0 > div {
+  max-height: max-content !important;
+  width: 100% !important;
+  max-width: 800px !important;
+  margin: auto !important;
+  position: relative !important;
+}
+
+/* Allow long inner form elements inside the modal to scroll smoothly */
+.fixed.inset-0 form,
+.fixed.inset-0 > div > div {
+  touch-action: pan-y !important;
+}
