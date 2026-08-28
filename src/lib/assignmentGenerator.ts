@@ -200,17 +200,46 @@ export function selectBalancedAndDiverseQuestions(
   blueprint: HomeworkBlueprint,
   allBankQuestions: BankQuestion[]
 ): Question[] {
-  // 1. Filter by subject & allowed question types
+  // 1. Strict Filter by Subject & Allowed Question Types
   let pool = allBankQuestions.filter(
-    (q) => q.subject === blueprint.subject && blueprint.allowedQuestionTypes.includes(q.type)
+    (q) =>
+      q.subject.trim().toLowerCase() === blueprint.subject.trim().toLowerCase() &&
+      blueprint.allowedQuestionTypes.includes(q.type)
   );
 
-  // 2. Filter by lesson if specified (prefer matching lesson, fallback to subject if pool is empty)
-  if (blueprint.lesson && blueprint.lesson !== "جميع الدروس") {
-    const lessonPool = pool.filter((q) => q.lesson.toLowerCase().trim() === blueprint.lesson.toLowerCase().trim());
-    if (lessonPool.length >= blueprint.totalQuestions) {
-      pool = lessonPool;
+  // Stop if no questions exist for this subject or selected question types
+  if (pool.length === 0) {
+    alert(
+      `لا توجد أسئلة متوفرة للمادة: "${blueprint.subject}" بالأنواع المحددة. يرجى تعديل البلوبرينت أو إضافة أسئلة للبنك.`
+    );
+    throw new Error("No questions match the subject and allowed question types.");
+  }
+
+  // 2. Filter by Tags (if tags were specified in the blueprint)
+  if (blueprint.tags && blueprint.tags.length > 0) {
+    pool = pool.filter(
+      (q) => q.tags && q.tags.some((tag) => blueprint.tags.includes(tag))
+    );
+    if (pool.length === 0) {
+      alert(
+        `لا توجد أسئلة تطابق الوسوم (Tags) المحددة في المادة: "${blueprint.subject}". يرجى تغيير الوسوم أو إضافة أسئلة لها.`
+      );
+      throw new Error("No questions match the selected tags.");
     }
+  }
+
+  // 3. Filter by Lesson (if specified and not "جميع الدروس")
+  if (blueprint.lesson && blueprint.lesson !== "جميع الدروس") {
+    const lessonPool = pool.filter(
+      (q) => q.lesson && q.lesson.toLowerCase().trim() === blueprint.lesson.toLowerCase().trim()
+    );
+    if (lessonPool.length === 0) {
+      alert(
+        `لا توجد أسئلة متوفرة للدرس: "${blueprint.lesson}". يرجى اختيار درس آخر أو تغيير الإعدادات.`
+      );
+      throw new Error("No questions match the selected lesson.");
+    }
+    pool = lessonPool;
   }
 
   // Deduplicate pool by ID
@@ -222,7 +251,15 @@ export function selectBalancedAndDiverseQuestions(
   }
   pool = Array.from(uniquePoolMap.values());
 
-  // 3. Partition by difficulty
+  // Check total available pool vs requested total
+  if (pool.length < blueprint.totalQuestions) {
+    alert(
+      `عدد الأسئلة المتاحة المطبقة للشروط هو (${pool.length}) فقط، بينما المطلوب في البلوبرينت هو (${blueprint.totalQuestions}). يرجى تقليل العدد المطلوب أو تغيير الفلاتر.`
+    );
+    throw new Error("Insufficient questions in question bank to fulfill blueprint requirement.");
+  }
+
+  // 4. Partition by difficulty
   const easyPool = pool.filter((q) => q.difficulty === DifficultyLevel.Easy);
   const mediumPool = pool.filter((q) => q.difficulty === DifficultyLevel.Medium);
   const hardPool = pool.filter((q) => q.difficulty === DifficultyLevel.Hard);
@@ -231,45 +268,31 @@ export function selectBalancedAndDiverseQuestions(
   const coveredConcepts = new Set<string>();
 
   const difficultyTargets = [
-    { pool: easyPool, quota: blueprint.difficultyDistribution.easyCount, name: "Easy" },
-    { pool: mediumPool, quota: blueprint.difficultyDistribution.mediumCount, name: "Medium" },
-    { pool: hardPool, quota: blueprint.difficultyDistribution.hardCount, name: "Hard" }
+    { pool: easyPool, quota: blueprint.difficultyDistribution.easyCount, name: "سهل" },
+    { pool: mediumPool, quota: blueprint.difficultyDistribution.mediumCount, name: "متوسط" },
+    { pool: hardPool, quota: blueprint.difficultyDistribution.hardCount, name: "صعب" }
   ];
 
-  // 4. Stratified selection per difficulty level
+  // 5. Check difficulty fulfillment strictly
   for (const stage of difficultyTargets) {
+    if (stage.pool.length < stage.quota) {
+      alert(
+        `الأسئلة المتوفرة بمستوى (${stage.name}) هي (${stage.pool.length}) فقط، بينما المطلوب هو (${stage.quota}). يرجى تعديل نسبة الصعوبة.`
+      );
+      throw new Error(`Insufficient questions for difficulty level: ${stage.name}`);
+    }
+
     let count = 0;
     while (count < stage.quota) {
       const best = selectBestCandidate(stage.pool, selectedList, coveredConcepts);
-      if (!best) break; // Pool exhausted for this difficulty
+      if (!best) break;
 
       selectedList.push({ ...best });
       count++;
 
-      // Update covered concepts
       const newConcepts = extractQuestionConcepts(best);
       for (const t of newConcepts) coveredConcepts.add(t);
     }
-  }
-
-  // 5. Backfill if selected total is below blueprint.totalQuestions
-  if (selectedList.length < blueprint.totalQuestions) {
-    let attempts = 0;
-    while (selectedList.length < blueprint.totalQuestions && attempts < pool.length * 2) {
-      attempts++;
-      const best = selectBestCandidate(pool, selectedList, coveredConcepts);
-      if (!best) break;
-
-      selectedList.push({ ...best });
-      const newConcepts = extractQuestionConcepts(best);
-      for (const t of newConcepts) coveredConcepts.add(t);
-    }
-  }
-
-  // If still empty (e.g. initial app boot with zero bank questions), sample any available bank questions
-  if (selectedList.length === 0 && allBankQuestions.length > 0) {
-    const fallback = allBankQuestions.slice(0, blueprint.totalQuestions);
-    return fallback.map((q) => ({ ...q }));
   }
 
   // 6. Randomize order if requested
@@ -379,3 +402,4 @@ export async function getOrGenerateAssignment(
 
   return generated;
 }
+
